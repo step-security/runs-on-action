@@ -7,7 +7,8 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "build:index": "ncc build index.js -o  dist",
     "build:post": "ncc build post.js -o  dist/post",
-    "build": "npm run build:index && npm run build:post"
+    "copy-binaries": "cp main-linux-amd64 main-linux-arm64 main-windows-amd64.exe dist/ && cp main-linux-amd64 main-linux-arm64 main-windows-amd64.exe dist/post/",
+    "build": "npm run build:index && npm run build:post && npm run copy-binaries"
   },
   "repository": {
     "type": "git",

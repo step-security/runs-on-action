@@ -10,7 +10,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/cloudwatch v1.55.1
 	github.com/aws/aws-sdk-go-v2/service/ec2 v1.294.0
 	github.com/guptarohit/asciigraph v0.8.1
-	github.com/sethvargo/go-githubactions v1.3.2
+	github.com/sethvargo/go-githubactions v1.4.0
 )
 
 require (

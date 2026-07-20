@@ -1,0 +1,29 @@
+{
+  "name": "runs-on-action",
+  "version": "2.2.0",
+  "description": "[![StepSecurity Maintained Action](https://raw.githubusercontent.com/step-security/maintained-actions-assets/main/assets/maintained-action-banner.png)](https://docs.stepsecurity.io/actions/stepsecurity-maintained-actions)",
+  "main": "dist/index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "build:index": "ncc build index.js -o  dist/",
+    "build:post": "ncc build post.js -o  dist/",
+    "build": "npm run build:index && npm run build:post"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/step-security/runs-on-action.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "MIT",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/step-security/runs-on-action/issues"
+  },
+  "homepage": "https://github.com/step-security/runs-on-action#readme",
+  "dependencies": {
+    "@actions/core": "^2.0.0",
+    "@vercel/ncc": "^0.44.1",
+    "axios": "^1.18.1"
+  }
+}

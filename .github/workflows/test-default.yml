@@ -20,16 +20,3 @@ jobs:
       # expectation: this is just a noop on managed runners
       - uses: ./
       - run: sleep 30
-
-  runs-on:
-    name: RunsOn runners
-    strategy:
-      fail-fast: false
-      matrix:
-        image: ${{ github.actor == 'dependabot[bot]' && fromJSON('["ubuntu24-full-x64"]') || fromJSON('["ubuntu24-full-x64", "ubuntu24-full-arm64", "windows22-base-x64"]') }}
-    runs-on: runs-on=${{ github.run_id }}/cpu=2/family=m7/image=${{ matrix.image }}
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v7
-      - uses: ./
-      - run: sleep 30

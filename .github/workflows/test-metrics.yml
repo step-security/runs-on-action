@@ -14,7 +14,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        image: [ubuntu24-full-x64, ubuntu24-full-arm64]
+        image: ${{ github.actor == 'dependabot[bot]' && fromJSON('["ubuntu24-full-x64"]') || fromJSON('["ubuntu24-full-x64", "ubuntu24-full-arm64"]') }}
         configuration: ["existing-aws-creds", "no-aws-creds", "cw-agent-stopped"]
     runs-on: runs-on=${{ github.run_id }}/cpu=2/family=m7/image=${{ matrix.image }}
     steps:

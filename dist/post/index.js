@@ -42671,13 +42671,13 @@ module.exports = /*#__PURE__*/JSON.parse('{"application/1d-interleaved-parityfec
 var __webpack_exports__ = {};
 const childProcess = __nccwpck_require__(5317)
 const os = __nccwpck_require__(857)
-const index_process = __nccwpck_require__(932)
+const post_process = __nccwpck_require__(932)
 const path = __nccwpck_require__(6928)
 const fs = __nccwpck_require__(9896)
 const core = __nccwpck_require__(7484)
 const axios = __nccwpck_require__(7269)
 
-const ARGS = ''.split(',').filter(arg => arg !== '')
+const ARGS = '--post'.split(',').filter(arg => arg !== '')
 const WINDOWS = 'win32'
 const LINUX = 'linux'
 const AMD64 = 'x64'
@@ -42685,14 +42685,14 @@ const ARM64 = 'arm64'
 
 async function validateSubscription() {
   let repoPrivate;
-  const eventPath = index_process.env.GITHUB_EVENT_PATH;
+  const eventPath = post_process.env.GITHUB_EVENT_PATH;
   if (eventPath && fs.existsSync(eventPath)) {
     const payload = JSON.parse(fs.readFileSync(eventPath, "utf8"));
     repoPrivate = payload?.repository?.private;
   }
 
   const upstream = 'runs-on/action';
-  const action = index_process.env.GITHUB_ACTION_REPOSITORY;
+  const action = post_process.env.GITHUB_ACTION_REPOSITORY;
   const docsUrl = 'https://docs.stepsecurity.io/actions/stepsecurity-maintained-actions';
   core.info('');
   core.info('\u001b[1;36mStepSecurity Maintained Action\u001b[0m');
@@ -42701,19 +42701,19 @@ async function validateSubscription() {
   core.info(`\u001b[36mLearn more:\u001b[0m ${docsUrl}`);
   core.info('');
   if (repoPrivate === false) return;
-  const serverUrl = index_process.env.GITHUB_SERVER_URL || 'https://github.com';
+  const serverUrl = post_process.env.GITHUB_SERVER_URL || 'https://github.com';
   const body = { action: action || '' };
   if (serverUrl !== 'https://github.com') body.ghes_server = serverUrl;
   try {
     await axios.post(
-      `https://agent.api.stepsecurity.io/v1/github/${index_process.env.GITHUB_REPOSITORY}/actions/maintained-actions-subscription`,
+      `https://agent.api.stepsecurity.io/v1/github/${post_process.env.GITHUB_REPOSITORY}/actions/maintained-actions-subscription`,
       body, { timeout: 3000 }
     );
   } catch (error) {
     if (axios.isAxiosError(error) && error.response?.status === 403) {
       core.error(`\u001b[1;31mThis action requires a StepSecurity subscription for private repositories.\u001b[0m`);
       core.error(`\u001b[31mLearn how to enable a subscription: ${docsUrl}\u001b[0m`);
-      index_process.exit(1);
+      post_process.exit(1);
     }
     core.info('Timeout or API not reachable. Continuing to next step.');
   }
@@ -42734,15 +42734,15 @@ function chooseBinary() {
     }
 
     console.error(`Unsupported platform (${platform}) and architecture (${arch})`)
-    index_process.exit(0)
+    post_process.exit(0)
 }
 
 async function main() {
     await validateSubscription();
     // Skip all operations if not running on RunsOn runners
-    if (!index_process.env.RUNS_ON_RUNNER_NAME || index_process.env.RUNS_ON_RUNNER_NAME === '') {
+    if (!post_process.env.RUNS_ON_RUNNER_NAME || post_process.env.RUNS_ON_RUNNER_NAME === '') {
         console.log('This action is only meant to be run on RunsOn (https://runs-on.com) runners, skipping all operations')
-        index_process.exit(0)
+        post_process.exit(0)
     }
     const binary = chooseBinary()
     const mainScript = path.join(__dirname, binary)
@@ -42753,7 +42753,7 @@ async function main() {
     } else {
         childProcess.execFileSync(mainScript, ARGS, { stdio: 'inherit' })
     }
-    index_process.exit(0)
+    post_process.exit(0)
 }
 
 if (require.main === require.cache[eval('__filename')]) {

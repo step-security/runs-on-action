@@ -3,7 +3,7 @@ description: 'RunsOn Action for magic caching, and more'
 runs:
   using: 'node24'
   main: 'dist/index.js'
-  post: 'dist/post.js'
+  post: 'dist/post/index.js'
 
 inputs:
   show_env:

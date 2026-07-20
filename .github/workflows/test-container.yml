@@ -1,0 +1,27 @@
+name: Test / Container
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  github:
+    name: GitHub
+    strategy:
+      fail-fast: false
+      matrix:
+        container:
+          - ubuntu:24.04
+    runs-on: ubuntu-latest
+    container: ${{ matrix.container }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+      - uses: ./
+        with:
+          show_env: 'true'
+          metrics: 'cpu,memory'
+      - run: sleep 30

@@ -24,7 +24,7 @@
   "homepage": "https://github.com/step-security/runs-on-action#readme",
   "dependencies": {
     "@actions/core": "^2.0.0",
-    "@vercel/ncc": "^0.44.1",
+    "@vercel/ncc": "^0.45.0",
     "axios": "^1.18.1"
   }
 }

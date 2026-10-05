@@ -38,32 +38,42 @@ Possible values:
 
 ### `show_costs`
 
-When the cost API has no matching pricing data, cost reporting logs an informational
-message and skips the cost table and job summary. This includes unsupported regions
-and unavailable instance or zone prices. Other API and network failures still warn.
+Displays how much it cost to run that workflow job, and compares it with a similar GitHub-hosted runner.
 
-Displays how much it cost to run that workflow job. Uses https://ec2-pricing.runs-on.com to get accurate data, for both on-demand and spot pricing across all regions and availability zones.
+**RunsOn v3.4.0 and later.** The RunsOn agent reports the cost itself, at the very end of the job, in the "Complete runner" step. This happens for every job, with or without this action, so `show_costs` only chooses how it is displayed. The estimate:
 
-Beta: also compares with similar machine on GitHub.
+* covers EC2 (on-demand or spot), the root EBS volume, and any sticky disk, from when the instance starts (or the job starts, on a warm-pool instance) until the job ends;
+* uses prices your RunsOn control plane already resolves, so the runner makes no pricing or EC2 API calls and needs no internet access.
 
-Example output in the post-step:
+Example output in the "Complete runner" step:
 
 ```
-| metric                 | value           |
-| ---------------------- | --------------- |
-| Instance Type          | m7i-flex.large  |
-| Instance Lifecycle     | on-demand       |
-| Region                 | us-east-1       |
-| Duration               | 2.06 minutes    |
-| Cost                   | $0.0040         |
-| GitHub equivalent cost | $0.0240         |
-| Savings                | $0.0200 (82.8%) |
+💰 Estimated cost: $0.0034 (GitHub-hosted: $0.0120)
+| Metric                   | Value                                      |
+| ------------------------ | ------------------------------------------ |
+| Instance type            | c7a.large                                  |
+| Instance lifecycle       | spot                                       |
+| Region                   | us-east-1                                  |
+| Availability zone        | us-east-1b                                 |
+| Platform                 | linux/x64, 2 vCPUs                         |
+| Billed duration          | 2m45s (boot, job, and 5s for shutdown)     |
+| Job duration             | 1m44s                                      |
+| EC2                      | $0.0014                                    |
+| EBS root volume          | $0.0008                                    |
+| EBS sticky disk          | $0.0012                                    |
+| Total                    | $0.0034                                    |
+| GitHub-hosted equivalent | $0.0120 (job duration rounded up to 2 min) |
+| Savings                  | $0.0086 (71.7%)                            |
 ```
+
+The GitHub-hosted equivalent uses GitHub's published per-minute price for the smallest runner with at least as many vCPUs. It bills only the job duration, rounded up to the next whole minute as GitHub does, since GitHub doesn't bill runner boot.
+
+**Earlier RunsOn versions.** The action's post step computes the cost from https://ec2-pricing.runs-on.com, for both on-demand and spot pricing across all regions and availability zones. It covers EC2 only, up to the post step. When the cost API has no matching pricing data, cost reporting logs an informational message and skips the cost table and job summary. This includes unsupported regions and unavailable instance or zone prices. Other API and network failures still warn.
 
 Possible values:
 
-* `inline` - Display costs in the action log output (default)
-* `summary` - Display costs in the action log output and in the GitHub job summary
+* `inline` - Display costs in the log output (default)
+* `summary` - Display costs in the log output and in the GitHub job summary
 * Any other value - Disables the feature
 
 When `step-security/runs-on-action` is invoked more than once in the same job, only the first
@@ -85,7 +95,7 @@ Supported metrics:
 | `cpu` | `usage_user`, `usage_system` |
 | `network` | `bytes_recv`, `bytes_sent` |
 | `memory` | `used_percent` |
-| `disk` | `used_percent`, `inodes_used` |
+| `disk` | `used_percent`, `inodes_used`, `free`, `total` |
 | `io` | `io_time`, `reads`, `writes` |
 
 ```yaml
@@ -103,10 +113,12 @@ Possible values:
 * `cpu` - CPU usage metrics (`usage_user`, `usage_system`)
 * `network` - Network metrics (`bytes_recv`, `bytes_sent`)
 * `memory` - Memory metrics (`used_percent`)
-* `disk` - Disk metrics (`used_percent`, `inodes_used`)
+* `disk` - Disk metrics (`used_percent`, `inodes_used`, `free`, `total`)
 * `io` - I/O metrics (`io_time`, `reads`, `writes`)
 * Comma-separated combinations (e.g., `cpu,network,memory,disk,io`)
 * Empty string - No additional metrics (default)
+
+Disk metrics are published for each of `/`, `/tmp`, `/var/lib/docker` and `/home/runner` that is a mount point, with the `InstanceId`, `path`, `fstype`, `device` and `VolumeId` dimensions. `VolumeId` is the EBS volume behind that mount, so a sticky disk or snapshot volume mounted at `/var/lib/docker` reports its own volume. Mounts that aren't on an EBS volume have no `VolumeId`, for example `tmpfs`, `overlay`, or the `md0` array RunsOn builds from local instance storage. Earlier versions published disk metrics without the `device` and `VolumeId` dimensions, so update dashboards or alarms that match on the previous set.
 
 The action will display live metrics with charts in the post-execution summary.
 

@@ -38,28 +38,42 @@ Possible values:
 
 ### `show_costs`
 
-Displays how much it cost to run that workflow job. Uses https://ec2-pricing.runs-on.com to get accurate data, for both on-demand and spot pricing across all regions and availability zones.
+Displays how much it cost to run that workflow job, and compares it with a similar GitHub-hosted runner.
 
-Beta: also compares with similar machine on GitHub.
+**RunsOn v3.4.0 and later.** The RunsOn agent reports the cost itself, at the very end of the job, in the "Complete runner" step. This happens for every job, with or without this action, so `show_costs` only chooses how it is displayed. The estimate:
 
-Example output in the post-step:
+* covers EC2 (on-demand or spot), the root EBS volume, and any sticky disk, from when the instance starts (or the job starts, on a warm-pool instance) until the job ends;
+* uses prices your RunsOn control plane already resolves, so the runner makes no pricing or EC2 API calls and needs no internet access.
+
+Example output in the "Complete runner" step:
 
 ```
-| metric                 | value           |
-| ---------------------- | --------------- |
-| Instance Type          | m7i-flex.large  |
-| Instance Lifecycle     | on-demand       |
-| Region                 | us-east-1       |
-| Duration               | 2.06 minutes    |
-| Cost                   | $0.0040         |
-| GitHub equivalent cost | $0.0240         |
-| Savings                | $0.0200 (82.8%) |
+💰 Estimated cost: $0.0034 (GitHub-hosted: $0.0120)
+| Metric                   | Value                                      |
+| ------------------------ | ------------------------------------------ |
+| Instance type            | c7a.large                                  |
+| Instance lifecycle       | spot                                       |
+| Region                   | us-east-1                                  |
+| Availability zone        | us-east-1b                                 |
+| Platform                 | linux/x64, 2 vCPUs                         |
+| Billed duration          | 2m45s (boot, job, and 5s for shutdown)     |
+| Job duration             | 1m44s                                      |
+| EC2                      | $0.0014                                    |
+| EBS root volume          | $0.0008                                    |
+| EBS sticky disk          | $0.0012                                    |
+| Total                    | $0.0034                                    |
+| GitHub-hosted equivalent | $0.0120 (job duration rounded up to 2 min) |
+| Savings                  | $0.0086 (71.7%)                            |
 ```
+
+The GitHub-hosted equivalent uses GitHub's published per-minute price for the smallest runner with at least as many vCPUs. It bills only the job duration, rounded up to the next whole minute as GitHub does, since GitHub doesn't bill runner boot.
+
+**Earlier RunsOn versions.** The action's post step computes the cost from https://ec2-pricing.runs-on.com, for both on-demand and spot pricing across all regions and availability zones. It covers EC2 only, up to the post step. When the cost API has no matching pricing data, cost reporting logs an informational message and skips the cost table and job summary. This includes unsupported regions and unavailable instance or zone prices. Other API and network failures still warn.
 
 Possible values:
 
-* `inline` - Display costs in the action log output (default)
-* `summary` - Display costs in the action log output and in the GitHub job summary
+* `inline` - Display costs in the log output (default)
+* `summary` - Display costs in the log output and in the GitHub job summary
 * Any other value - Disables the feature
 
 When `step-security/runs-on-action` is invoked more than once in the same job, only the first
@@ -81,7 +95,7 @@ Supported metrics:
 | `cpu` | `usage_user`, `usage_system` |
 | `network` | `bytes_recv`, `bytes_sent` |
 | `memory` | `used_percent` |
-| `disk` | `used_percent`, `inodes_used` |
+| `disk` | `used_percent`, `inodes_used`, `free`, `total` |
 | `io` | `io_time`, `reads`, `writes` |
 
 ```yaml
@@ -99,10 +113,12 @@ Possible values:
 * `cpu` - CPU usage metrics (`usage_user`, `usage_system`)
 * `network` - Network metrics (`bytes_recv`, `bytes_sent`)
 * `memory` - Memory metrics (`used_percent`)
-* `disk` - Disk metrics (`used_percent`, `inodes_used`)
+* `disk` - Disk metrics (`used_percent`, `inodes_used`, `free`, `total`)
 * `io` - I/O metrics (`io_time`, `reads`, `writes`)
 * Comma-separated combinations (e.g., `cpu,network,memory,disk,io`)
 * Empty string - No additional metrics (default)
+
+Disk metrics are published for each of `/`, `/tmp`, `/var/lib/docker` and `/home/runner` that is a mount point, with the `InstanceId`, `path`, `fstype`, `device` and `VolumeId` dimensions. `VolumeId` is the EBS volume behind that mount, so a sticky disk or snapshot volume mounted at `/var/lib/docker` reports its own volume. Mounts that aren't on an EBS volume have no `VolumeId`, for example `tmpfs`, `overlay`, or the `md0` array RunsOn builds from local instance storage. Earlier versions published disk metrics without the `device` and `VolumeId` dimensions, so update dashboards or alarms that match on the previous set.
 
 The action will display live metrics with charts in the post-execution summary.
 
@@ -297,7 +313,7 @@ The action will display live metrics with charts in the post-execution summary.
 
 ### `sccache`
 
-Only available for Linux runners.
+Available on RunsOn Linux and Windows runners.
 
 Configures [`sccache`](https://github.com/mozilla/sccache) so that you can cache the compilation of C/C++ code, Rust, as well as NVIDIA's CUDA.
 
@@ -309,6 +325,8 @@ Example:
 jobs:
   build:
     runs-on: runs-on=${{ github.run_id }}/runner=2cpu-linux-x64/extras=s3-cache
+    env:
+      CARGO_INCREMENTAL: "0"
     steps:
       - uses: step-security/runs-on-action@v2
         with:
@@ -316,6 +334,8 @@ jobs:
       - uses: step-security/sccache-action@v0
       - run: # your slow rust compilation
 ```
+
+For Rust, disable incremental compilation as shown above. Run this action before the installer or any command that starts the sccache server: a running server keeps its startup configuration. This action exports settings; the separate installer supplies the executable.
 
 Possible values:
 
@@ -328,9 +348,21 @@ What this does under the hood is the equivalent of:
 echo "SCCACHE_GHA_ENABLED=false" >> $GITHUB_ENV
 echo "SCCACHE_BUCKET=${{ env.RUNS_ON_S3_BUCKET_CACHE}}" >> $GITHUB_ENV
 echo "SCCACHE_REGION=${{ env.RUNS_ON_AWS_REGION}}" >> $GITHUB_ENV
-echo "SCCACHE_S3_KEY_PREFIX=cache/sccache" >> $GITHUB_ENV
+echo "SCCACHE_S3_KEY_PREFIX=cache/sccache/${{ github.repository_id }}/linux-x64/v1" >> $GITHUB_ENV
 echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
 ```
+
+The action scopes compiler cache objects per repository and per runner platform:
+
+```text
+cache/sccache/<repository id>/<runner os>-<runner arch>/v1
+```
+
+The repository id is used rather than the `owner/name` slug so that renaming or transferring a repository does not invalidate its cache; the action falls back to the slug (as two key components, `<owner>/<name>`) when `GITHUB_REPOSITORY_ID` is not exposed. The trailing `v1` is a layout version, so a future change to the key layout can be rolled out without reusing existing objects.
+
+This is operational isolation, not a security boundary: repositories sharing a RunsOn stack still share the bucket and the runner IAM role. It provides per-repository cache ownership, growth and cost attribution, targeted invalidation, and freedom to change one repository's cache layout without touching the others.
+
+Previously every repository on a stack shared the flat `cache/sccache` prefix. Moving to the scoped layout starts one cold cache per repository and platform. Objects written under the old prefix are left to the stack's cache lifecycle rule, which expires everything under `cache/` after `S3CacheExpirationInDays` (10 by default).
 
 ### `sticky_cache`
 
@@ -365,9 +397,11 @@ with:
     custom,path=vendor/custom-cache,path=~/.cache/my-tool
 ```
 
-On RunsOn runners, the action fails if the sticky disk is absent or does not
-become ready before `sticky_wait_timeout`. On any other runner (for example a
-workflow falling back to GitHub-hosted runners), the action skips all
+On RunsOn runners, the action fails if the sticky disk contract is absent or
+the disk does not become ready before `sticky_wait_timeout`. If the runner
+reports that the requested disk is unavailable, the action warns and skips all
+sticky cache operations so the job can continue cold. On any other runner (for
+example a workflow falling back to GitHub-hosted runners), the action skips all
 operations and exits successfully, so the same workflow keeps working without
 sticky caches. The `custom` mode requires one or more `path=` options;
 repeat the record or option to persist several paths. Relative paths resolve
@@ -394,7 +428,41 @@ Supported cache modes and the directories they persist:
 | `gradle` | | `~/.gradle/caches`, `~/.gradle/wrapper` |
 | `maven` | | `~/.m2/repository` |
 | `playwright` | | `~/.cache/ms-playwright` |
+| `tool-cache` | | `$RUNNER_TOOL_CACHE` (toolchains installed by `setup-*` actions) |
 | `custom` | | One or more paths supplied with `path=` |
+
+#### `tool-cache` mode
+
+The `tool-cache` mode persists toolchains installed through GitHub's tool
+cache. Run this action before actions such as `actions/setup-go`,
+`actions/setup-node`, or `actions/setup-python`:
+
+```yaml
+jobs:
+  build:
+    runs-on: runs-on=${{ github.run_id }}/runner=2cpu-linux-x64/sticky=tools-ubuntu24:20gb
+    steps:
+      - uses: actions/checkout@v7
+      - uses: step-security/runs-on-action@v2
+        with:
+          sticky_cache: tool-cache
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.25.1'
+```
+
+This mode mounts an empty or restored sticky directory directly over the
+runner-provided `RUNNER_TOOL_CACHE` path, and persists only the toolchains
+installed after the mount. It does not copy toolchains from the runner image
+into the sticky cache, so the image's preinstalled toolchains are hidden for
+the rest of the job: `setup-*` actions download any version they need, the
+`GOROOT_*` variables (and, on Linux, the default `go` linked into `/usr/bin`)
+point to missing directories, and `github/codeql-action` downloads its CodeQL
+bundle. Use it for jobs that install a large toolchain the image does not ship.
+
+It supports Linux and Windows and does not cache package dependencies or build
+outputs. Use a sticky-disk name tied to the runner image, as restored binaries
+may not be compatible with another operating system image.
 
 #### `buildkit` mode (Docker layer cache)
 

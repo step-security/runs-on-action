@@ -18,8 +18,8 @@ const (
 	readyPollInterval  = 500 * time.Millisecond
 )
 
-func supportedOS() bool {
-	return runtime.GOOS == "linux" || runtime.GOOS == "windows"
+func supportedOS(goos string) bool {
+	return goos == "linux" || goos == "windows"
 }
 
 // Options configures the sticky disk cache setup.
@@ -38,9 +38,14 @@ type mountResult struct {
 
 // Configure bind-mounts the requested cache directories onto the job's sticky
 // disk. It requires a `sticky=[<name>:]<size>` label on the job. Mount failures
-// are reported as warnings. A missing or unready sticky disk returns an error
-// because sticky_cache explicitly requires persistent storage.
+// are reported as warnings. A missing or unready sticky disk returns an error.
+// When the agent explicitly reports that the disk is unavailable, setup skips
+// the caches so the job can continue cold.
 func Configure(action *githubactions.Action, opts Options) error {
+	return configure(action, opts, runtime.GOOS)
+}
+
+func configure(action *githubactions.Action, opts Options, goos string) error {
 	// Publish a deterministic value even when parsing, ordering, setup, or
 	// overlap validation fails and the caller uses continue-on-error.
 	action.SetOutput("cache-hit", "false")
@@ -50,7 +55,7 @@ func Configure(action *githubactions.Action, opts Options) error {
 		return err
 	}
 
-	if !supportedOS() {
+	if !supportedOS(goos) {
 		action.Warningf("Sticky disk cache is only supported on Linux and Windows runners, skipping.")
 		action.SetOutput("cache-hit", "false")
 		return nil
@@ -62,13 +67,13 @@ func Configure(action *githubactions.Action, opts Options) error {
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		if runtime.GOOS == "windows" {
+		if goos == "windows" {
 			home = `C:\Users\runner`
 		} else {
 			home = "/home/runner"
 		}
 	}
-	if err := validateCacheOrdering(requests, runtime.GOOS, home, workspace); err != nil {
+	if err := validateCacheOrdering(requests, goos, home, workspace); err != nil {
 		return err
 	}
 
@@ -82,6 +87,10 @@ func Configure(action *githubactions.Action, opts Options) error {
 		timeout = defaultWaitTimeout
 	}
 	if err := waitForReady(action, contract.ReadyFile, contract.UnavailableFile, timeout); err != nil {
+		if errors.Is(err, errStickyDiskUnavailable) {
+			action.Warningf("%v. Continuing without sticky disk caches.", err)
+			return nil
+		}
 		return missing(action, err.Error())
 	}
 	// The ready marker is an existence-only signal: the mount root always
@@ -99,8 +108,9 @@ func Configure(action *githubactions.Action, opts Options) error {
 
 	// Resolve all targets, deduplicating by absolute path.
 	type mountSpec struct {
-		target string
-		root   bool
+		target        string
+		root          bool
+		inheritTarget bool
 	}
 	type postSetup struct {
 		name    string
@@ -110,13 +120,13 @@ func Configure(action *githubactions.Action, opts Options) error {
 	var specs []mountSpec
 	var posts []postSetup
 	var results []mountResult
-	seen := map[string]bool{}
+	seen := map[string]int{}
 	seenPosts := map[string]bool{}
 	state, err := readJobCacheState()
 	if err != nil {
 		return fmt.Errorf("read cache state from earlier action invocations: %w", err)
 	}
-	addTarget := func(path string, root bool) (string, error) {
+	addTarget := func(path string, root, inheritTarget bool) (string, error) {
 		resolved := resolveTarget(path, home, workspace)
 		// Every workspace-relative target gets ancestry validation, whether it
 		// came from a custom record or a built-in mode (e.g. ruby's
@@ -126,24 +136,27 @@ func Configure(action *githubactions.Action, opts Options) error {
 			return "", err
 		}
 		canonical := canonicalPath(resolved)
-		if seen[canonical] {
+		if index, exists := seen[canonical]; exists {
+			// Excluding the current target is the stricter policy and must win
+			// when two requested modes resolve to the same directory.
+			specs[index].inheritTarget = specs[index].inheritTarget && inheritTarget
 			return resolved, nil
 		}
-		seen[canonical] = true
-		specs = append(specs, mountSpec{target: resolved, root: root})
+		seen[canonical] = len(specs)
+		specs = append(specs, mountSpec{target: resolved, root: root, inheritTarget: inheritTarget})
 		return resolved, nil
 	}
 	for _, request := range requests {
 		if request.Custom {
 			for _, path := range request.Paths {
-				if _, err := addTarget(path, false); err != nil {
+				if _, err := addTarget(path, false, true); err != nil {
 					return err
 				}
 			}
 			continue
 		}
 		mode := request.Mode
-		if !mode.supportedOn(runtime.GOOS) {
+		if !mode.supportedOn(goos) {
 			action.Warningf("Cache mode '%s' is not supported on Windows runners, skipping.", mode.Name)
 			results = append(results, mountResult{
 				Target: mode.Name,
@@ -172,9 +185,13 @@ func Configure(action *githubactions.Action, opts Options) error {
 			results = append(results, mountResult{Target: mode.Name, Hit: hit && err == nil, Err: err})
 			continue
 		}
+		paths, err := mode.pathsFor(goos)
+		if err != nil {
+			return err
+		}
 		var modeTargets []string
-		for _, path := range mode.pathsFor(runtime.GOOS) {
-			resolved, err := addTarget(path, mode.Root)
+		for _, path := range paths {
+			resolved, err := addTarget(path, mode.Root, !mode.IgnoreTargetContents)
 			if err != nil {
 				return err
 			}
@@ -208,7 +225,7 @@ func Configure(action *githubactions.Action, opts Options) error {
 
 	mountErrors := make(map[string]error, len(specs))
 	for _, spec := range specs {
-		hit, err := cacheMount(action, mountRoot, spec.target, spec.root)
+		hit, err := cacheMount(action, mountRoot, spec.target, spec.root, spec.inheritTarget)
 		key := canonicalPath(spec.target)
 		if originalHit, found := state.Mounts[key]; found {
 			// A repeated invocation in the same job must preserve the original
@@ -325,6 +342,14 @@ func postSetupMountsSucceeded(targets []string, mountErrors map[string]error) bo
 }
 
 func validateCacheOrdering(requests []CacheRequest, goos, home, workspace string) error {
+	for _, request := range requests {
+		if request.Custom || request.Mode.Setup != nil {
+			continue
+		}
+		if _, err := request.Mode.pathsFor(goos); err != nil {
+			return err
+		}
+	}
 	if goos == "windows" {
 		return nil
 	}
@@ -356,7 +381,11 @@ func validateCacheOrdering(requests []CacheRequest, goos, home, workspace string
 		name := "custom"
 		if !request.Custom {
 			name = request.Mode.Name
-			paths = request.Mode.pathsFor(goos)
+			modePaths, err := request.Mode.pathsFor(goos)
+			if err != nil {
+				return err
+			}
+			paths = modePaths
 		}
 		for _, path := range paths {
 			if isWorkspaceCachePath(path, home, workspace) {
@@ -394,6 +423,8 @@ func missing(action *githubactions.Action, msg string) error {
 	return errors.New(msg)
 }
 
+var errStickyDiskUnavailable = errors.New("sticky disk is unavailable")
+
 // waitForReady polls until the agent publishes either the mounted-ready marker
 // or the terminal-unavailable marker, bounded by timeout. Both markers are
 // existence-only signals; their content is deliberately ignored.
@@ -402,7 +433,7 @@ func waitForReady(action *githubactions.Action, readyFile string, unavailableFil
 	logged := false
 	for {
 		if _, err := os.Stat(unavailableFile); err == nil {
-			return fmt.Errorf("sticky disk is unavailable (marker: %s)", unavailableFile)
+			return fmt.Errorf("%w (marker: %s)", errStickyDiskUnavailable, unavailableFile)
 		}
 		if _, err := os.Stat(readyFile); err == nil {
 			return nil
@@ -421,7 +452,13 @@ func waitForReady(action *githubactions.Action, readyFile string, unavailableFil
 // PostJob runs the post-step hooks of the requested cache modes before the
 // sticky disk is unmounted and snapshotted by the runner's job-completed hook.
 func PostJob(action *githubactions.Action, cacheEntries []string) error {
-	if !supportedOS() {
+	if unavailableFile := strings.TrimSpace(os.Getenv(stickyDiskUnavailableFileEnv)); unavailableFile != "" {
+		if _, err := os.Stat(unavailableFile); err == nil {
+			action.Infof("Sticky disk was unavailable; skipping cache post-job hooks.")
+			return nil
+		}
+	}
+	if !supportedOS(runtime.GOOS) {
 		return nil
 	}
 	requests, err := ParseCacheRequests(cacheEntries)

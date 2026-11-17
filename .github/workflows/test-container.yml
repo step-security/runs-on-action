@@ -1,0 +1,23 @@
+name: Test / Container
+
+on:
+  workflow_call:
+
+jobs:
+  github:
+    name: GitHub
+    strategy:
+      fail-fast: false
+      matrix:
+        container:
+          - ubuntu:24.04
+    runs-on: ubuntu-latest
+    container: ${{ matrix.container }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./
+        with:
+          show_env: 'true'
+          metrics: 'cpu,memory'
+      - run: sleep 30

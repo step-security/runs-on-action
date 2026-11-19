@@ -3,6 +3,25 @@ description: "Extract the binaries and JS entrypoints built by the CI build job 
 runs:
   using: composite
   steps:
+    - uses: actions/download-artifact@v4
+      with:
+        name: dist
+        path: .runs-on-dist
+    # The tarball keeps the binaries' executable bit, which artifacts drop.
+    - if: runner.os != 'Windows'
+      shell: sh
+      run: tar -xf .runs-on-dist/dist.tar && rm -rf .runs-on-dist
+    - if: runner.os == 'Windows'
+      shell: powershell
+      run: |
+        tar -xf .runs-on-dist/dist.tar
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        Remove-Item -Recurse -Force .runs-on-dist
+name: Use CI-built action
+description: "Extract the binaries and JS entrypoints built by the CI build job into the workspace, so that `uses: ./` runs this commit's code."
+runs:
+  using: composite
+  steps:
     - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
       with:
         name: dist

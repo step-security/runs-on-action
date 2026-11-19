@@ -600,6 +600,56 @@ The variable holds the same credential as the tools' configuration: whatever rea
 
 None of these tools sends a GitHub token, so the action sends the job's runtime token to the agent once (`POST /_runs-on/tools`), and the agent answers with an ID that stands for it, `<id>`, and the path of each protocol it serves: `bazel` (Bazel's HTTP cache), `sccache` (sccache's WebDAV storage) and `kv`, a plain key/value cache that `go`, `gradle`, `mbx` and other clients use with namespaces of their own. The paths hold the ID (`/_runs-on/tools/<id>/kv`), and the action uses them as given, on the same agent. The same token always gets the same paths, nothing without the token can compute them, and they work on this runner only, until the token expires. The action masks `<id>` in the job's logs. It configures a tool only when the agent gives its protocol a path (`GET /_runs-on/tools` lists the protocols without a token); on an older agent, or one without that protocol, the action warns and leaves the tool alone.
 
+### `gocacheprog`
+
+Shares the go command's build cache (Go 1.24 or later) between jobs through Magic Cache. Later steps get [`GOCACHEPROG`](https://pkg.go.dev/cmd/go#hdr-Build_and_test_caching) pointing at this action's own binary, which keeps the cache on local disk and in the stack's S3 cache bucket, with GitHub's branch scoping: a pull request reads its base branch's entries and writes only its own. When the job starts, the action downloads in the background the entries the same job used in its previous run, so the go command finds them on local disk instead of fetching them one at a time. Its post step saves the list of what the job used. Put the action first in the job: the download then runs while the next steps check out the code and install Go. A job is its workflow file, its name and its matrix leg, so each leg of a matrix keeps its own list.
+
+```yaml
+jobs:
+  build:
+    runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/extras=s3-cache
+    steps:
+      - uses: runs-on/action@v2
+        with:
+          gocacheprog: true
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: stable
+          cache: false # the build cache is in Magic Cache; this would save a second copy
+      - uses: actions/cache@v5
+        with:
+          path: ~/go/pkg/mod
+          key: gomod-${{ runner.os }}-${{ hashFiles('**/go.sum') }}
+      - run: go build ./... && go test ./...
+```
+
+Requires Magic Cache (`extras=s3-cache`). Without it, the action warns and the go command keeps its local build cache. Container jobs work too: the runner mounts the action, and so the helper, into the job container.
+
+Compiled packages are shared between jobs; test results are not. Within a job, tests whose inputs did not change are still reported as `(cached)`, but a new job runs its tests again, because a test can depend on things Go does not track, such as a database or the network.
+
+To share test results too, set `gocacheprog: with-tests`. A job then reports `(cached)` for a test that passed in another job with the same inputs: the package, its dependencies, and the files and environment variables the test read through the standard library. Go does not see a database, the network or a file read by a child process, so keep the default for tests that depend on those, or run them with `go test -count=1`. Jobs that use `true` never read the results that `with-tests` jobs share. What a passing test printed is stored with its result, so with `with-tests` it is readable by any job that can read the cache, including pull requests from forks: do not use it for tests that print secrets.
+
+### `bazel_remote_cache`
+
+Gives Bazel (6.3 or later) a remote cache stored through Magic Cache. The action writes `--remote_cache` into Bazel's system rc, so every later `bazel` command uses it without a flag, and a project that sets its own `--remote_cache` keeps it. Action results follow GitHub's branch scoping: a job writes them to its own branch or pull request, and reads its base and default branch's when it has none of its own. Outputs are verified against their digest and shared across the repository.
+
+```yaml
+jobs:
+  build:
+    runs-on: runs-on=${{ github.run_id }}/runner=8cpu-linux-x64/extras=s3-cache
+    steps:
+      - uses: runs-on/action@v2
+        with:
+          bazel_remote_cache: true
+      - uses: actions/checkout@v5
+      - run: bazel test //... --remote_download_minimal
+```
+
+Requires Magic Cache (`extras=s3-cache`) and RunsOn v3.5.1 or later. Otherwise, the action warns and Bazel builds without the remote cache. `--remote_download_minimal` skips downloading outputs that later actions do not need, which matters most on warm builds.
+
+Bazel's HTTP cache client sends no credentials, so the action registers the job's runtime token with the RunsOn agent, which answers with a cache URL that stands for the token. The rc gets `common --remote_cache=http://<runner IP>:6871/bazel/<id>`, in `/etc/bazel.bazelrc` (with `sudo`), or `%ProgramData%\bazel.bazelrc` on Windows. The URL is masked in the job's logs. In a container job, the action writes the container's system rc, which needs root or passwordless `sudo` in the container; without either, it warns.
+
 ### `sticky_cache`
 
 Available for Linux and Windows runners on jobs with a sticky-disk label. Use `sticky=<size>` for the default snapshot lineage or `sticky=<name>:<size>` for a named lineage; the optional name must come first. Volume settings follow the size, for example `sticky=go-cache:20gb:gp3:750mbs:6000iops`. The `apt`, `buildkit`, and `git` cache modes are Linux only.
@@ -790,6 +840,3 @@ Restore-only jobs let one job keep a cache current while others only read it, fo
 ```
 
 The action sets a `cache-hit` output: `true` when every requested path was restored from a previous snapshot. It also sets `buildkit-builder` to the stable builder name.
-
-
-
